@@ -107,7 +107,6 @@ struct ns_entry {
 	uint32_t		block_size;
 	uint32_t		md_size;
 	bool			md_interleave;
-	unsigned int		seed;
 	struct spdk_zipf	*zipf;
 	bool			pi_loc;
 	enum spdk_nvme_pi_type	pi_type;
@@ -185,7 +184,15 @@ struct ns_worker_ctx {
 	struct spdk_histogram_data	*histogram;
 };
 
+struct worker_thread {
+	TAILQ_HEAD(, ns_worker_ctx)	ns_ctx;
+	TAILQ_ENTRY(worker_thread)	link;
+	unsigned			lcore;
+	unsigned int			seed;
+};
+
 struct perf_task {
+	struct worker_thread	*worker;
 	struct ns_worker_ctx	*ns_ctx;
 	struct iovec		*iovs; /* array of iovecs to transfer. */
 	int			iovcnt; /* Number of iovecs in iovs array. */
@@ -198,12 +205,6 @@ struct perf_task {
 #if HAVE_LIBAIO
 	struct iocb		iocb;
 #endif
-};
-
-struct worker_thread {
-	TAILQ_HEAD(, ns_worker_ctx)	ns_ctx;
-	TAILQ_ENTRY(worker_thread)	link;
-	unsigned			lcore;
 };
 
 struct ns_fn_table {
@@ -1385,13 +1386,14 @@ submit_single_io(struct perf_task *task)
 {
 	uint64_t		offset_in_ios;
 	int			rc;
+	struct worker_thread	*worker = task->worker;
 	struct ns_worker_ctx	*ns_ctx = task->ns_ctx;
 	struct ns_entry		*entry = ns_ctx->entry;
 
 	if (entry->zipf) {
 		offset_in_ios = spdk_zipf_generate(entry->zipf);
 	} else if (g_is_random) {
-		offset_in_ios = rand_r(&entry->seed) % entry->size_in_ios;
+		offset_in_ios = (((uint64_t)rand_r(&worker->seed) << 32) | (uint64_t)rand_r(&worker->seed)) % entry->size_in_ios;
 	} else {
 		offset_in_ios = ns_ctx->offset_in_ios++;
 		if (ns_ctx->offset_in_ios == entry->size_in_ios) {
@@ -1402,7 +1404,7 @@ submit_single_io(struct perf_task *task)
 	task->submit_tsc = spdk_get_ticks();
 
 	if ((g_rw_percentage == 100) ||
-	    (g_rw_percentage != 0 && ((rand_r(&entry->seed) % 100) < g_rw_percentage))) {
+	    (g_rw_percentage != 0 && ((rand_r(&worker->seed) % 100) < g_rw_percentage))) {
 		task->is_read = true;
 	} else {
 		task->is_read = false;
@@ -1489,7 +1491,7 @@ io_complete(void *ctx, const struct spdk_nvme_cpl *cpl)
 }
 
 static struct perf_task *
-allocate_task(struct ns_worker_ctx *ns_ctx, int queue_depth)
+allocate_task(struct worker_thread *worker, struct ns_worker_ctx *ns_ctx, int queue_depth)
 {
 	struct perf_task *task;
 
@@ -1502,17 +1504,18 @@ allocate_task(struct ns_worker_ctx *ns_ctx, int queue_depth)
 	ns_ctx->entry->fn_table->setup_payload(task, queue_depth % 8 + 1);
 
 	task->ns_ctx = ns_ctx;
+	task->worker = worker;
 
 	return task;
 }
 
 static void
-submit_io(struct ns_worker_ctx *ns_ctx, int queue_depth)
+submit_io(struct worker_thread *worker, struct ns_worker_ctx *ns_ctx, int queue_depth)
 {
 	struct perf_task *task;
 
 	while (queue_depth-- > 0) {
-		task = allocate_task(ns_ctx, queue_depth);
+		task = allocate_task(worker, ns_ctx, queue_depth);
 		submit_single_io(task);
 	}
 }
@@ -1632,7 +1635,7 @@ work_fn(void *arg)
 
 	/* Submit initial I/O for each namespace. */
 	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
-		submit_io(ns_ctx, g_queue_depth);
+		submit_io(worker, ns_ctx, g_queue_depth);
 	}
 
 	while (spdk_likely(!g_exit)) {
@@ -2585,6 +2588,7 @@ register_workers(void)
 
 		TAILQ_INIT(&worker->ns_ctx);
 		worker->lcore = i;
+		worker->seed = rand();
 		TAILQ_INSERT_TAIL(&g_workers, worker, link);
 		g_num_workers++;
 	}
@@ -2847,6 +2851,10 @@ int main(int argc, char **argv)
 	struct worker_thread *worker, *main_worker;
 	struct spdk_env_opts opts;
 	pthread_t thread_id = 0;
+
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	srand(now.tv_nsec);
 
 	spdk_env_opts_init(&opts);
 	opts.name = "perf";
