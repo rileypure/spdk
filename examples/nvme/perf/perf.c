@@ -303,7 +303,7 @@ static struct spdk_pci_addr g_allowed_pci_addr[MAX_ALLOWED_PCI_DEVICE_NUM];
 
 struct trid_entry {
 	struct spdk_nvme_transport_id	trid;
-	uint16_t			nsid;
+	uint32_t			nsid;
 	char				hostnqn[SPDK_NVMF_NQN_MAX_LEN + 1];
 	TAILQ_ENTRY(trid_entry)		tailq;
 };
@@ -2053,15 +2053,15 @@ add_trid(const char *trid_str)
 
 	ns = strcasestr(trid_str, "ns:");
 	if (ns) {
-		char nsid_str[6]; /* 5 digits maximum in an nsid */
+		char nsid_str[7]; /* 6 digits maximum in an nsid */
 		int len;
 		int nsid;
 
 		ns += 3;
 
 		len = strcspn(ns, " \t\n");
-		if (len > 5) {
-			fprintf(stderr, "NVMe namespace IDs must be 5 digits or less\n");
+		if (len > 6) {
+			fprintf(stderr, "NVMe namespace IDs must be 6 digits or less\n");
 			free(trid_entry);
 			return 1;
 		}
@@ -2070,13 +2070,13 @@ add_trid(const char *trid_str)
 		nsid_str[len] = '\0';
 
 		nsid = spdk_strtol(nsid_str, 10);
-		if (nsid <= 0 || nsid > 65535) {
-			fprintf(stderr, "NVMe namespace IDs must be less than 65536 and greater than 0\n");
+		if (nsid <= 0 || nsid > 131072) {
+			fprintf(stderr, "NVMe namespace IDs must be less than 131072 and greater than 0\n");
 			free(trid_entry);
 			return 1;
 		}
 
-		trid_entry->nsid = (uint16_t)nsid;
+		trid_entry->nsid = nsid;
 	}
 
 	hostnqn = strcasestr(trid_str, "hostnqn:");
