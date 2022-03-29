@@ -732,7 +732,7 @@ register_file(const char *path)
 	entry->io_size_blocks = g_io_size_bytes / blklen;
 
 	if (g_is_random && g_zipf_theta > 0) {
-		entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, 0);
+		entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, rand());
 	} else {
 		entry->zipf = NULL;
 	}
@@ -1251,7 +1251,7 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	entry->io_size_blocks = g_io_size_bytes / sector_size;
 
 	if (g_is_random && g_zipf_theta > 0) {
-		entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, 0);
+		entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, rand());
 	} else {
 		entry->zipf = NULL;
 	}
