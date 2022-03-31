@@ -135,8 +135,12 @@ static const double g_latency_cutoffs[] = {
 
 struct ns_worker_stats {
 	uint64_t		io_completed;
+	uint64_t		read_completed;
+	uint64_t		write_completed;
 	uint64_t		last_io_completed;
 	uint64_t		total_tsc;
+	uint64_t		read_tsc;
+	uint64_t		write_tsc;
 	uint64_t		min_tsc;
 	uint64_t		max_tsc;
 	uint64_t		last_tsc;
@@ -1439,8 +1443,18 @@ task_complete(struct perf_task *task)
 	entry = ns_ctx->entry;
 	ns_ctx->current_queue_depth--;
 	ns_ctx->stats.io_completed++;
+	if (task->is_read) {
+		ns_ctx->stats.read_completed++;
+	} else {
+		ns_ctx->stats.write_completed++;
+	}
 	tsc_diff = spdk_get_ticks() - task->submit_tsc;
 	ns_ctx->stats.total_tsc += tsc_diff;
+	if (task->is_read) {
+		ns_ctx->stats.read_tsc += tsc_diff;
+	} else {
+		ns_ctx->stats.write_tsc += tsc_diff;
+	}
 	if (spdk_unlikely(ns_ctx->stats.min_tsc > tsc_diff)) {
 		ns_ctx->stats.min_tsc = tsc_diff;
 	}
@@ -1847,21 +1861,23 @@ print_bucket(void *ctx, uint64_t start, uint64_t end, uint64_t count,
 static void
 print_performance(void)
 {
-	uint64_t total_io_completed, total_io_tsc;
-	double io_per_second, mb_per_second, average_latency, min_latency, max_latency;
-	double sum_ave_latency, min_latency_so_far, max_latency_so_far;
-	double total_io_per_second, total_mb_per_second;
+	uint64_t total_read_completed, total_write_completed, total_read_tsc, total_write_tsc;
+	double read_per_second, read_mb_per_second, total_read_per_second, total_read_mb_per_second;
+	double write_per_second, write_mb_per_second, total_write_per_second, total_write_mb_per_second;
+	double read_average_latency, write_average_latency;
 	int ns_count;
 	struct worker_thread	*worker;
 	struct ns_worker_ctx	*ns_ctx;
 	uint32_t max_strlen;
 
-	total_io_per_second = 0;
-	total_mb_per_second = 0;
-	total_io_completed = 0;
-	total_io_tsc = 0;
-	min_latency_so_far = (double)UINT64_MAX;
-	max_latency_so_far = 0;
+	total_read_per_second = 0;
+	total_read_mb_per_second = 0;
+	total_read_completed = 0;
+	total_read_tsc = 0;
+	total_write_per_second = 0;
+	total_write_mb_per_second = 0;
+	total_write_completed = 0;
+	total_write_tsc = 0;
 	ns_count = 0;
 
 	max_strlen = 0;
@@ -1873,49 +1889,51 @@ print_performance(void)
 
 	printf("========================================================\n");
 	printf("%*s\n", max_strlen + 60, "Latency(us)");
-	printf("%-*s: %10s %10s %10s %10s %10s\n",
-	       max_strlen + 13, "Device Information", "IOPS", "MiB/s", "Average", "min", "max");
+	printf("%-*s: %10s %10s %10s %10s %10s %10s\n",
+	       max_strlen + 13, "Device Information", "R IOPS", "R MiB/s", "R Average", "W IOPS", "W MiB/s", "W Average");
 
 	TAILQ_FOREACH(worker, &g_workers, link) {
 		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
 			if (ns_ctx->stats.io_completed != 0) {
-				io_per_second = (double)ns_ctx->stats.io_completed * 1000 * 1000 / g_elapsed_time_in_usec;
-				mb_per_second = io_per_second * g_io_size_bytes / (1024 * 1024);
-				average_latency = ((double)ns_ctx->stats.total_tsc / ns_ctx->stats.io_completed) * 1000 * 1000 /
+				read_per_second = (double)ns_ctx->stats.read_completed * 1000 * 1000 / g_elapsed_time_in_usec;
+				read_mb_per_second = read_per_second * g_io_size_bytes / (1024 * 1024);
+				read_average_latency = ((double)ns_ctx->stats.read_tsc / ns_ctx->stats.read_completed) * 1000 * 1000 /
 						  g_tsc_rate;
-				min_latency = (double)ns_ctx->stats.min_tsc * 1000 * 1000 / g_tsc_rate;
-				if (min_latency < min_latency_so_far) {
-					min_latency_so_far = min_latency;
-				}
+				write_per_second = (double)ns_ctx->stats.write_completed * 1000 * 1000 / g_elapsed_time_in_usec;
+				write_mb_per_second = write_per_second * g_io_size_bytes / (1024 * 1024);
+				write_average_latency = ((double)ns_ctx->stats.write_tsc / ns_ctx->stats.write_completed) * 1000 * 1000 /
+						  g_tsc_rate;
 
-				max_latency = (double)ns_ctx->stats.max_tsc * 1000 * 1000 / g_tsc_rate;
-				if (max_latency > max_latency_so_far) {
-					max_latency_so_far = max_latency;
-				}
-
-				printf("%-*.*s from core %2u: %10.2f %10.2f %10.2f %10.2f %10.2f\n",
+				printf("%-*.*s from core %2u: %10.2f %10.2f %10.2f %10.2f %10.2f %10.2f\n",
 				       max_strlen, max_strlen, ns_ctx->entry->name, worker->lcore,
-				       io_per_second, mb_per_second,
-				       average_latency, min_latency, max_latency);
-				total_io_per_second += io_per_second;
-				total_mb_per_second += mb_per_second;
-				total_io_completed += ns_ctx->stats.io_completed;
-				total_io_tsc += ns_ctx->stats.total_tsc;
+				       read_per_second, read_mb_per_second, read_average_latency,
+				       write_per_second, write_mb_per_second, write_average_latency);
+
+				total_read_per_second += read_per_second;
+				total_read_mb_per_second += read_mb_per_second;
+				total_read_completed += ns_ctx->stats.read_completed;
+				total_read_tsc += ns_ctx->stats.read_tsc;
+				total_write_per_second += write_per_second;
+				total_write_mb_per_second += write_mb_per_second;
+				total_write_completed += ns_ctx->stats.write_completed;
+				total_write_tsc += ns_ctx->stats.write_tsc;
 				ns_count++;
 			}
 		}
 	}
 
-	if (ns_count != 0 && total_io_completed) {
-		sum_ave_latency = ((double)total_io_tsc / total_io_completed) * 1000 * 1000 / g_tsc_rate;
+	if (ns_count != 0 && (total_read_completed || total_write_completed)) {
+		read_average_latency = ((double)total_read_tsc / total_read_completed) * 1000 * 1000 / g_tsc_rate;
+		write_average_latency = ((double)total_write_tsc / total_write_completed) * 1000 * 1000 / g_tsc_rate;
 		printf("========================================================\n");
-		printf("%-*s: %10.2f %10.2f %10.2f %10.2f %10.2f\n",
-		       max_strlen + 13, "Total", total_io_per_second, total_mb_per_second,
-		       sum_ave_latency, min_latency_so_far, max_latency_so_far);
+		printf("%-*s: %10.2f %10.2f %10.2f %10.2f %10.2f %10.2f\n",
+		       max_strlen + 13, "Total",
+		       total_read_per_second, total_read_mb_per_second, read_average_latency,
+		       total_write_per_second, total_write_mb_per_second, write_average_latency);
 		printf("\n");
 	}
 
-	if (g_latency_sw_tracking_level == 0 || total_io_completed == 0) {
+	if (g_latency_sw_tracking_level == 0 || (total_read_completed == 0 && total_write_completed == 0)) {
 		return;
 	}
 
