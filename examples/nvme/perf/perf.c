@@ -107,7 +107,8 @@ struct ns_entry {
 	uint32_t		block_size;
 	uint32_t		md_size;
 	bool			md_interleave;
-	struct spdk_zipf	*zipf;
+	struct spdk_zipf	*zipf_read;
+	struct spdk_zipf	*zipf_write;
 	bool			pi_loc;
 	enum spdk_nvme_pi_type	pi_type;
 	uint32_t		io_flags;
@@ -277,7 +278,8 @@ static bool g_exit;
 /* Default to 10 seconds for the keep alive value. This value is arbitrary. */
 static uint32_t g_keep_alive_timeout_in_ms = 10000;
 static uint32_t g_quiet_count = 1;
-static double g_zipf_theta;
+static double g_zipf_theta_read;
+static double g_zipf_theta_write;
 
 /* When user specifies -Q, some error messages are rate limited.  When rate
  * limited, we only print the error message every g_quiet_count times the
@@ -736,10 +738,15 @@ register_file(const char *path)
 	entry->size_in_ios = size / g_io_size_bytes;
 	entry->io_size_blocks = g_io_size_bytes / blklen;
 
-	if (g_is_random && g_zipf_theta > 0) {
-		entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, rand());
+	if (g_is_random && g_zipf_theta_read > 0) {
+		entry->zipf_read = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_read, rand());
 	} else {
-		entry->zipf = NULL;
+		entry->zipf_read = NULL;
+	}
+	if (g_is_random && g_zipf_theta_write > 0) {
+		entry->zipf_write = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_write, rand());
+	} else {
+		entry->zipf_write = NULL;
 	}
 
 	snprintf(entry->name, sizeof(entry->name), "%s", path);
@@ -1255,10 +1262,15 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	entry->size_in_ios = ns_size / g_io_size_bytes;
 	entry->io_size_blocks = g_io_size_bytes / sector_size;
 
-	if (g_is_random && g_zipf_theta > 0) {
-		entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, rand());
+	if (g_is_random && g_zipf_theta_read > 0) {
+		entry->zipf_read = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_read, rand());
 	} else {
-		entry->zipf = NULL;
+		entry->zipf_read = NULL;
+	}
+	if (g_is_random && g_zipf_theta_write > 0) {
+		entry->zipf_write = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_write, rand());
+	} else {
+		entry->zipf_write = NULL;
 	}
 
 	entry->block_size = spdk_nvme_ns_get_extended_sector_size(ns);
@@ -1301,7 +1313,8 @@ unregister_namespaces(void)
 
 	TAILQ_FOREACH_SAFE(entry, &g_namespaces, link, tmp) {
 		TAILQ_REMOVE(&g_namespaces, entry, link);
-		spdk_zipf_free(&entry->zipf);
+		spdk_zipf_free(&entry->zipf_read);
+		spdk_zipf_free(&entry->zipf_write);
 		free(entry);
 	}
 }
@@ -1406,8 +1419,10 @@ submit_single_io(struct perf_task *task)
 		task->is_read = false;
 	}
 
-	if (entry->zipf && task->is_read) {
-		offset_in_ios = spdk_zipf_generate(entry->zipf);
+	if (entry->zipf_read && task->is_read) {
+		offset_in_ios = spdk_zipf_generate(entry->zipf_read);
+	} else if (entry->zipf_write && !task->is_read) {
+		offset_in_ios = spdk_zipf_generate(entry->zipf_write);
 	} else if (g_is_random) {
 		offset_in_ios = (((uint64_t)rand_r(&worker->seed) << 32) | (uint64_t)rand_r(&worker->seed)) % entry->size_in_ios;
 	} else {
@@ -1764,7 +1779,8 @@ static void usage(char *program_name)
 	printf("\t[-w, --io-pattern <pattern> io pattern type, must be one of\n");
 	printf("\t\t(read, write, randread, randwrite, rw, randrw)]\n");
 	printf("\t[-M, --rwmixread <0-100> rwmixread (100 for reads, 0 for writes)]\n");
-	printf("\t[-F, --zipf <theta> use zipf distribution for random I/O\n");
+	printf("\t[-F, --zipf-read <theta> use zipf distribution for random I/O\n");
+	printf("\t[-W, --zipf-write <theta> use zipf distribution for random I/O\n");
 	printf("\t[-L, --enable-sw-latency-tracking enable latency tracking via sw, default: disabled]\n");
 	printf("\t\t-L for latency summary, -LL for detailed histogram\n");
 	printf("\t[-l, --enable-ssd-latency-tracking enable latency tracking via ssd (if supported), default: disabled]\n");
@@ -2288,8 +2304,10 @@ static const struct option g_perf_cmdline_opts[] = {
 	{"max-completion-per-poll",			required_argument,	NULL, PERF_MAX_COMPLETIONS_PER_POLL},
 #define PERF_DISABLE_SQ_CMB	'D'
 	{"disable-sq-cmb",			no_argument,	NULL, PERF_DISABLE_SQ_CMB},
-#define PERF_ZIPF		'F'
-	{"zipf",				required_argument,	NULL, PERF_ZIPF},
+#define PERF_ZIPF_READ		'F'
+	{"zipf-read",				required_argument,	NULL, PERF_ZIPF_READ},
+#define PERF_ZIPF_WRITE		'W'
+	{"zipf-write",				required_argument,	NULL, PERF_ZIPF_WRITE},
 #define PERF_ENABLE_DEBUG	'G'
 	{"enable-debug",			no_argument,	NULL, PERF_ENABLE_DEBUG},
 #define PERF_ENABLE_TCP_HDGST	'H'
@@ -2410,10 +2428,18 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 				break;
 			}
 			break;
-		case PERF_ZIPF:
+		case PERF_ZIPF_READ:
 			errno = 0;
-			g_zipf_theta = strtod(optarg, &endptr);
-			if (errno || optarg == endptr || g_zipf_theta < 0) {
+			g_zipf_theta_read = strtod(optarg, &endptr);
+			if (errno || optarg == endptr || g_zipf_theta_read < 0) {
+				fprintf(stderr, "Illegal zipf theta value %s\n", optarg);
+				return 1;
+			}
+			break;
+		case PERF_ZIPF_WRITE:
+			errno = 0;
+			g_zipf_theta_write = strtod(optarg, &endptr);
+			if (errno || optarg == endptr || g_zipf_theta_write < 0) {
 				fprintf(stderr, "Illegal zipf theta value %s\n", optarg);
 				return 1;
 			}
