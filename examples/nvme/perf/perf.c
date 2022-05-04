@@ -52,6 +52,8 @@
 #include "spdk/sock.h"
 #include "spdk/zipf.h"
 
+#include <rte_random.h>
+
 #ifdef SPDK_CONFIG_URING
 #include <liburing.h>
 #endif
@@ -194,7 +196,6 @@ struct worker_thread {
 	TAILQ_HEAD(, ns_worker_ctx)	ns_ctx;
 	TAILQ_ENTRY(worker_thread)	link;
 	unsigned			lcore;
-	unsigned int			seed;
 };
 
 struct perf_task {
@@ -739,12 +740,12 @@ register_file(const char *path)
 	entry->io_size_blocks = g_io_size_bytes / blklen;
 
 	if (g_is_random && g_zipf_theta_read > 0) {
-		entry->zipf_read = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_read, rand());
+		entry->zipf_read = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_read);
 	} else {
 		entry->zipf_read = NULL;
 	}
 	if (g_is_random && g_zipf_theta_write > 0) {
-		entry->zipf_write = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_write, rand());
+		entry->zipf_write = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_write);
 	} else {
 		entry->zipf_write = NULL;
 	}
@@ -1263,12 +1264,12 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	entry->io_size_blocks = g_io_size_bytes / sector_size;
 
 	if (g_is_random && g_zipf_theta_read > 0) {
-		entry->zipf_read = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_read, rand());
+		entry->zipf_read = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_read);
 	} else {
 		entry->zipf_read = NULL;
 	}
 	if (g_is_random && g_zipf_theta_write > 0) {
-		entry->zipf_write = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_write, rand());
+		entry->zipf_write = spdk_zipf_create(entry->size_in_ios, g_zipf_theta_write);
 	} else {
 		entry->zipf_write = NULL;
 	}
@@ -1408,23 +1409,22 @@ submit_single_io(struct perf_task *task)
 {
 	uint64_t		offset_in_ios;
 	int			rc;
-	struct worker_thread	*worker = task->worker;
 	struct ns_worker_ctx	*ns_ctx = task->ns_ctx;
 	struct ns_entry		*entry = ns_ctx->entry;
 
 	if ((g_rw_percentage == 100) ||
-	    (g_rw_percentage != 0 && ((rand_r(&worker->seed) % 100) < g_rw_percentage))) {
+	    (g_rw_percentage != 0 && ((int)(rte_rand() % 100) < g_rw_percentage))) {
 		task->is_read = true;
 	} else {
 		task->is_read = false;
 	}
 
 	if (entry->zipf_read && task->is_read) {
-		offset_in_ios = spdk_zipf_generate(entry->zipf_read);
+		offset_in_ios = spdk_zipf_generate(entry->zipf_read, rte_rand());
 	} else if (entry->zipf_write && !task->is_read) {
-		offset_in_ios = spdk_zipf_generate(entry->zipf_write);
+		offset_in_ios = spdk_zipf_generate(entry->zipf_write, rte_rand());
 	} else if (g_is_random) {
-		offset_in_ios = (((uint64_t)rand_r(&worker->seed) << 32) | (uint64_t)rand_r(&worker->seed)) % entry->size_in_ios;
+		offset_in_ios = rte_rand() % entry->size_in_ios;
 	} else {
 		offset_in_ios = ns_ctx->offset_in_ios++;
 		if (ns_ctx->offset_in_ios == entry->size_in_ios) {
@@ -2647,7 +2647,6 @@ register_workers(void)
 
 		TAILQ_INIT(&worker->ns_ctx);
 		worker->lcore = i;
-		worker->seed = rand();
 		TAILQ_INSERT_TAIL(&g_workers, worker, link);
 		g_num_workers++;
 	}
@@ -2915,7 +2914,7 @@ int main(int argc, char **argv)
 
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	srand(now.tv_nsec);
+	rte_srand((uint64_t)now.tv_sec + ((uint64_t)now.tv_nsec * 1000000000));
 
 	spdk_env_opts_init(&opts);
 	opts.name = "perf";

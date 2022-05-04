@@ -54,11 +54,10 @@ struct spdk_zipf;
  *
  * \param range Range of values for the zipf distribution.
  * \param theta Theta distribution parameter.
- * \param seed Seed value for the random number generator.
  *
  * \return a pointer to the new zipf generator.
  */
-struct spdk_zipf *spdk_zipf_create(uint64_t range, double theta, uint32_t seed);
+struct spdk_zipf *spdk_zipf_create(uint64_t range, double theta);
 
 /**
  * Free a zipf generator and set the pointer to NULL.
@@ -74,7 +73,7 @@ void spdk_zipf_free(struct spdk_zipf **zipfp);
  *
  * \return value in the range [0, range)
  */
-uint64_t spdk_zipf_generate(struct spdk_zipf *zipf);
+uint64_t spdk_zipf_generate(struct spdk_zipf *zipf, uint64_t rand_in);
 
 #ifdef __cplusplus
 }

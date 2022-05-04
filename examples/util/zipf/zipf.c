@@ -71,6 +71,8 @@ main(int argc, char **argv)
 		return 1;
 	}
 
+	srand(time(NULL));
+
 	theta = atof(argv[1]);
 	range = spdk_strtol(argv[2], 10);
 	count = spdk_strtol(argv[3], 10);
@@ -81,7 +83,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	zipf = spdk_zipf_create(range, theta, time(NULL));
+	zipf = spdk_zipf_create(range, theta);
 	h = spdk_histogram_data_alloc();
 	if (zipf == NULL || h == NULL) {
 		spdk_zipf_free(&zipf);
@@ -91,7 +93,7 @@ main(int argc, char **argv)
 	}
 
 	for (i = 0; i < count; i++) {
-		spdk_histogram_data_tally(h, spdk_zipf_generate(zipf));
+		spdk_histogram_data_tally(h, spdk_zipf_generate(zipf, rand()));
 	}
 
 	spdk_histogram_data_iterate(h, print_bucket, NULL);

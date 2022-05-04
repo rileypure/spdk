@@ -39,7 +39,7 @@ include $(SPDK_ROOT_DIR)/mk/nvme.libtest.mk
 
 ifeq ($(OS),Linux)
 SYS_LIBS += -laio
-CFLAGS += -DHAVE_LIBAIO
+CFLAGS += -DHAVE_LIBAIO $(ENV_CFLAGS)
 endif
 
 install: $(APP)
